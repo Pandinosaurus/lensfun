@@ -31,29 +31,31 @@ typedef struct
 
 typedef struct
 {
-  bool    reverse;
-  float   scale;
-  size_t  alignment;
+  bool                   reverse;
+  gchar                 *distortionModel;
+  lfLensCalibDistortion  calib;
+  size_t                 alignment;
 } lfTestParams;
 
 // setup a standard lens
 void mod_setup(lfFixture *lfFix, gconstpointer data)
 {
+  (void)data;
   lfTestParams *p = (lfTestParams *)data;
 
   lfFix->lens             = new lfLens();
-  //lfFix->lens->CropFactor = 1.0f;
   lfFix->lens->Type       = LF_RECTILINEAR;
+  lfFix->lens->CropFactor  = 1.0;
+  lfFix->lens->AspectRatio = 1.5;
 
-  lfFix->img_height = 300;
-  lfFix->img_width  = 300;
+  lfFix->lens->AddCalibDistortion(&p->calib);
 
-  lfFix->mod = new lfModifier(lfFix->lens, 1.0f, lfFix->img_width, lfFix->img_height);
+  lfFix->img_height = 299;
+  lfFix->img_width  = 299;
 
-  lfFix->mod->Initialize(
-    lfFix->lens, LF_PF_F32,
-    24.0f, 2.8f, 1000.0f, p->scale, LF_RECTILINEAR,
-    LF_MODIFY_SCALE, p->reverse);
+
+  lfFix->mod = new lfModifier(lfFix->lens, 24.0f, 1.0f, lfFix->img_width, lfFix->img_height, LF_PF_F32, p->reverse);
+  lfFix->mod->EnableDistortionCorrection();
 
   lfFix->coordBuff = NULL;
 
@@ -66,6 +68,7 @@ void mod_setup(lfFixture *lfFix, gconstpointer data)
 
 void mod_teardown(lfFixture *lfFix, gconstpointer data)
 {
+  (void)data;
   lfTestParams *p = (lfTestParams *)data;
 
   if(p->alignment == 0)
@@ -77,8 +80,9 @@ void mod_teardown(lfFixture *lfFix, gconstpointer data)
   delete lfFix->lens;
 }
 
-void test_mod_coord_scale(lfFixture *lfFix, gconstpointer data)
+void test_mod_coord_distortion(lfFixture *lfFix, gconstpointer data)
 {
+  (void)data;
   for(size_t y = 0; y < lfFix->img_height; y++)
   {
     float *coordData = (float *)lfFix->coordBuff + (size_t)2 * y * lfFix->img_width;
@@ -90,7 +94,7 @@ void test_mod_coord_scale(lfFixture *lfFix, gconstpointer data)
 }
 
 #ifdef _OPENMP
-void test_mod_coord_scale_parallel(lfFixture *lfFix, gconstpointer data)
+void test_mod_coord_distortion_parallel(lfFixture *lfFix, gconstpointer data)
 {
   #pragma omp parallel for schedule(static)
   for(int y = 0; y < static_cast<int>(lfFix->img_height); y++)
@@ -110,10 +114,10 @@ gchar *describe(lfTestParams *p, const char *prefix)
   g_snprintf(alignment, sizeof(alignment), "%lu-byte", p->alignment);
 
   return g_strdup_printf(
-           "/%s/%s/%f/%s",
+           "/%s/%s/%s/%s",
            prefix,
-           p->reverse ? "unScale" : "Scale",
-           p->scale,
+           p->reverse ? "UnDist" : "Dist",
+           p->distortionModel,
            p->alignment == 0 ? "unaligned" : alignment
          );
 }
@@ -123,16 +127,24 @@ void add_set_item(lfTestParams *p)
   gchar *desc = NULL;
 
   desc = describe(p, "modifier/coord/serialFor");
-  g_test_add(desc, lfFixture, p, mod_setup, test_mod_coord_scale, mod_teardown);
+  g_test_add(desc, lfFixture, p, mod_setup, test_mod_coord_distortion, mod_teardown);
   g_free(desc);
   desc = NULL;
 
 #ifdef _OPENMP
   desc = describe(p, "modifier/coord/parallelFor");
-  g_test_add(desc, lfFixture, p, mod_setup, test_mod_coord_scale_parallel, mod_teardown);
+  g_test_add(desc, lfFixture, p, mod_setup, test_mod_coord_distortion_parallel, mod_teardown);
   g_free(desc);
   desc = NULL;
 #endif
+}
+
+void free_params(gpointer mem)
+{
+  lfTestParams *p = (lfTestParams *)mem;
+
+  g_free(p->distortionModel);
+  g_free(mem);
 }
 
 int main(int argc, char **argv)
@@ -149,11 +161,24 @@ int main(int argc, char **argv)
 
   for(std::vector<bool>::iterator it_reverse = reverse.begin(); it_reverse != reverse.end(); ++it_reverse)
   {
-    std::vector<float> scale;
-    scale.push_back(0.75f);
-    scale.push_back(1.25f);
+    std::map<std::string, lfLensCalibDistortion> distortCalib;
+    // ??? + Canon EF 85mm f/1.2L II USM
+    distortCalib["LF_DIST_MODEL_POLY3"] = lfLensCalibDistortion
+    {
+      LF_DIST_MODEL_POLY3, 85.0f, 85.3502f, false, { -0.00412f, 0.0f, 0.0f}, {0.0f, 0.0f}
+    };
+    //Canon PowerShot G12 (fixed lens)
+    distortCalib["LF_DIST_MODEL_POLY5"] = lfLensCalibDistortion
+    {
+      LF_DIST_MODEL_POLY5, 6.1f, 6.1f, false, { -0.030571633f, 0.004658548f, 0.0f}, {0.0f, 0.0f}
+    };
+    //Canon EOS 5D Mark III + Canon EF 24-70mm f/2.8L II USM
+    distortCalib["LF_DIST_MODEL_PTLENS"] = lfLensCalibDistortion
+    {
+      LF_DIST_MODEL_PTLENS, 24.0f, 24.46704f, false, {0.02964f, -0.07853f, 0.02943f}, {0.0f, 0.0f}
+    };
 
-    for(std::vector<float>::iterator it_scale = scale.begin(); it_scale != scale.end(); ++it_scale)
+    for(std::map<std::string, lfLensCalibDistortion>::iterator it_distortCalib = distortCalib.begin(); it_distortCalib != distortCalib.end(); ++it_distortCalib)
     {
       std::vector<size_t> align;
       align.push_back(0);
@@ -165,9 +190,10 @@ int main(int argc, char **argv)
       {
         lfTestParams *p = (lfTestParams *)g_malloc(sizeof(lfTestParams));
 
-        p->reverse   = *it_reverse;
-        p->scale     = *it_scale;
-        p->alignment = *it_align;
+        p->reverse         = *it_reverse;
+        p->distortionModel = g_strdup(it_distortCalib->first.c_str());
+        p->calib           = it_distortCalib->second;
+        p->alignment       = *it_align;
 
         add_set_item(p);
 
@@ -178,7 +204,7 @@ int main(int argc, char **argv)
 
   const int res = g_test_run();
 
-  g_slist_free_full(slist, (GDestroyNotify)g_free);
+  g_slist_free_full(slist, (GDestroyNotify)free_params);
 
   return res;
 }

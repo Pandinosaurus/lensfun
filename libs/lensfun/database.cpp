@@ -34,7 +34,7 @@ const char* const lfDatabase::SystemUpdatesLocation = g_build_filename (SYSTEM_D
 lfDatabase::lfDatabase ()
 {
 
-    // Take care to replace all occurences with the respective static variables
+    // Take care to replace all occurrences with the respective static variables
     // when the deprecated HomeDataDir and UserUpdatesDir variables are removed.
     HomeDataDir = strdup(lfDatabase::UserLocation);
     UserUpdatesDir = strdup(lfDatabase::UserUpdatesLocation);
@@ -51,16 +51,6 @@ lfDatabase::~lfDatabase ()
         delete c;
     for (auto l : Lenses)
         delete l;
-}
-
-lfDatabase *lfDatabase::Create ()
-{
-    return new lfDatabase ();
-}
-
-void lfDatabase::Destroy ()
-{
-    delete this;
 }
 
 long int lfDatabase::ReadTimestamp (const char *dirname)
@@ -83,11 +73,6 @@ long int lfDatabase::ReadTimestamp (const char *dirname)
     }
 
     return timestamp;
-}
-
-bool lfDatabase::LoadDirectory (const gchar *dirname)
-{
-    return Load(dirname) == LF_NO_ERROR;
 }
 
 lfError lfDatabase::Load ()
@@ -620,6 +605,7 @@ static void _xml_end_element (GMarkupParseContext *context,
                               gpointer             user_data,
                               GError             **error)
 {
+    (void)context;
     lfParserData *pd = (lfParserData *)user_data;
 
     g_assert (pd->stack_depth);
@@ -819,9 +805,14 @@ lfError lfDatabase::Load (const char *errcontext, const char *data, size_t data_
     };
 
     /* Temporarily drop numeric format to "C" */
-    char *old_numeric = setlocale (LC_NUMERIC, NULL);
-    old_numeric = strdup(old_numeric);
-    setlocale(LC_NUMERIC,"C");
+#if defined(PLATFORM_WINDOWS)
+    _configthreadlocale(_ENABLE_PER_THREAD_LOCALE);
+    setlocale (LC_NUMERIC, "C");
+#else
+    auto loc = uselocale((locale_t) 0); // get current local
+    auto nloc = newlocale(LC_NUMERIC_MASK, "C", (locale_t) 0);
+    uselocale(nloc);
+#endif
 
     lfParserData pd;
     memset (&pd, 0, sizeof (pd));
@@ -846,15 +837,22 @@ lfError lfDatabase::Load (const char *errcontext, const char *data, size_t data_
     g_markup_parse_context_free (mpc);
 
     /* Restore numeric format */
-    setlocale (LC_NUMERIC, old_numeric);
-    free(old_numeric);
+#if defined(PLATFORM_WINDOWS)
+    _configthreadlocale(_DISABLE_PER_THREAD_LOCALE);
+#else
+    uselocale(loc);
+    freelocale(nloc);
+#endif
 
     return e;
 }
 
 lfError lfDatabase::Save (const char *filename) const
 {
-    char *output = Save ();
+    char *output = nullptr;
+    size_t len = 0;
+    Save(output, len);
+
     if (!output)
         return lfError (-ENOMEM);
 
@@ -874,20 +872,17 @@ lfError lfDatabase::Save (const char *filename) const
     return ol ? LF_NO_ERROR : lfError (-ENOSPC);
 }
 
-char *lfDatabase::Save () const
-{
-    size_t len = 0;
-    char* xml = nullptr;
-    Save(xml, len);
-    return xml;
-}
-
 lfError lfDatabase::Save (char*& xml, size_t& data_size) const
 {
     /* Temporarily drop numeric format to "C" */
-    char *old_numeric = setlocale (LC_NUMERIC, NULL);
-    old_numeric = strdup(old_numeric);
-    setlocale(LC_NUMERIC,"C");
+#if defined(PLATFORM_WINDOWS)
+    _configthreadlocale(_ENABLE_PER_THREAD_LOCALE);
+    setlocale (LC_NUMERIC, "C");
+#else
+    auto loc = uselocale((locale_t) 0); // get current local
+    auto nloc = newlocale(LC_NUMERIC_MASK, "C", (locale_t) 0);
+    uselocale(nloc);
+#endif
 
     GString *output = g_string_sized_new (1024);
 
@@ -1123,8 +1118,12 @@ lfError lfDatabase::Save (char*& xml, size_t& data_size) const
     g_string_append (output, "</lensdatabase>\n");
 
     /* Restore numeric format */
-    setlocale (LC_NUMERIC, old_numeric);
-    free(old_numeric);
+#if defined(PLATFORM_WINDOWS)
+    _configthreadlocale(_DISABLE_PER_THREAD_LOCALE);
+#else
+    uselocale(loc);
+    freelocale(nloc);
+#endif
 
     data_size = output->len;    
     xml = g_string_free (output, FALSE);
@@ -1562,7 +1561,7 @@ lfDatabase *lf_db_create ()
 
 void lf_db_destroy (lfDatabase *db)
 {
-    db->Destroy ();
+    delete db;
 }
 
 long int lf_db_read_timestamp (const char *dirname)
